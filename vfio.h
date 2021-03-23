@@ -51,6 +51,7 @@ class VfioDevice {
     bool PrintDeviceInfo();
     bool PrintBarInfo(int bar);
     bool PrintPciConfigSpace();
+    bool PrintIrqsInfo();
 
     //
     std::optional<vfio_region_info> GetDeviceRegionInfo(int region_idx);
@@ -61,7 +62,9 @@ class VfioDevice {
 
     Result<ResultVoid, std::string> RegisterDmaRegion(void *va, uint64_t iova,
                                                       uint64_t size);
-
+    Result<int, std::string> RegisterInterrupt(uint32_t index);
+    void UnmaskInterrupt(uint32_t index);
+    void TestInterrupt(uint32_t index);
     //
     // Register IO
     //

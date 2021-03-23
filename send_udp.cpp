@@ -1,4 +1,5 @@
 #include <iostream>
+#include <thread>
 
 #include <arpa/inet.h>
 #include <cinttypes>
@@ -76,6 +77,30 @@ class IntelI211Device {
     const uint32_t STATUS_PFRSTDONE = 21; // PF_RST_DONE
     const uint32_t STATUS_LU = 1;         // Link Up
 
+    // 8.2.3 Extended Device Control Register
+    const uint64_t CTRL_EXT = 0x0018;
+
+    // 8.2.4 Media Dependent Interface Control Reg
+    const uint64_t MDIC = 0x0020;
+    const uint64_t MDIC_READY = 28; // Ready bit
+
+    // 8.7.3 Extended Interrupt Cause Read
+    const uint64_t EICR = 0x1580;
+
+    // 8.7.5 Extended Interrupt Mask Set Read Register
+    const uint64_t EIMS = 0x1524;
+    const uint64_t EIMS_OTHER = 31; // Need to check IMS
+
+    // 8.7.9 Interrupt Cause Read
+    const uint64_t ICR = 0x1500;
+
+    // 8.7.11 Interrupt Mask Set Read Register
+    const uint64_t IMS = 0x1508;
+    const uint64_t IMS_LSC = 2; // Link status change
+
+    // 8.7.17 General Purpose Interrupt Enable
+    const uint64_t GPIE = 0x1514;
+
     // 8.11.1 Transmit Control Register
     const uint64_t TCTL = 0x0400;
     const uint64_t TCTL_EN = 1; // Transmit enable
@@ -111,6 +136,15 @@ class IntelI211Device {
         dev_->Write32(0, EIMC, 0xffffffff);
     }
 
+    void EnableLscInterrupt() {
+        // Clear any existing events
+        dev_->WriteBit32(0, ICR, IMS_LSC, 1);
+        dev_->WriteBit32(0, EICR, EIMS_OTHER, 1);
+        // enable
+        dev_->WriteBit32(0, IMS, IMS_LSC, 1);
+        dev_->WriteBit32(0, EIMS, EIMS_OTHER, 1);
+    }
+
     void ResetDevice() {
         dev_->WriteBit32(0, CTRL, CTRL_RST, 1);
         usleep(1000);
@@ -121,6 +155,43 @@ class IntelI211Device {
         dev_->WriteBit32(0, CTRL, CTRL_SLU, 1);
         printf("Waiting linkup...\n");
         dev_->WaitBit32(0, STATUS, STATUS_LU, 1);
+    }
+
+    uint16_t ReadMdiRegister(int regaddr) {
+        uint32_t val = (1u << 27) | ((regaddr & 0x1F) << 16);
+        dev_->Write32(0, MDIC, val);
+        dev_->WaitBit32(0, MDIC, MDIC_READY, 1);
+        return dev_->Read32(0, MDIC) & 0xFFFF;
+    }
+
+    void PrintRegisters() {
+#define PRINT_HEX(name)                                                                  \
+    do {                                                                                 \
+        uint32_t val = dev_->Read32(0, name);                                            \
+        printf(#name ": %#x\n", val);                                                    \
+    } while (0)
+        uint32_t val = dev_->Read32(0, STATUS);
+        reinterpret_cast<StatusRegister *>(&val)->dump("");
+        PRINT_HEX(CTRL_EXT);
+        PRINT_HEX(EIMS);
+        PRINT_HEX(IMS);
+        PRINT_HEX(GPIE);
+        // 8.22.3.2
+        printf("PHY:COPPER_CONTROL_REG: %#x\n", ReadMdiRegister(0));
+    }
+
+    auto RegisterInterrupt() {
+        dev_->UnmaskInterrupt(0);
+        return dev_->RegisterInterrupt(0);
+    }
+
+    void UnmaskInterrupt() { dev_->UnmaskInterrupt(0); }
+
+    void TestInterrupt() { dev_->TestInterrupt(0); }
+
+    void ReadInterruptCause(uint32_t *icr, uint32_t *eicr) {
+        *icr = dev_->Read32(0, ICR);
+        *eicr = dev_->Read32(0, EICR);
     }
 
     template <typename R, typename T> R *skip(T *p, uint64_t how_many_Ts_to_skip) {
@@ -272,6 +343,8 @@ Result<ResultVoid, std::string> run() {
 
     if (!device.PrintDeviceInfo())
         return Err("Failed to print device info.");
+    if (!device.PrintIrqsInfo())
+        return Err("Failed to print IRQ info.");
     if (!device.PrintPciConfigSpace())
         return Err("Failed to print config space.");
     for (int bar = 0; bar < 8; bar++)
@@ -286,10 +359,35 @@ Result<ResultVoid, std::string> run() {
     nic.MaskAllInterrupts();
     printf("Device reset done.\n");
 
+    int interrupt_eventfd = VALUE_OR_RAISE(nic.RegisterInterrupt());
+    std::thread interrupt_handler([interrupt_eventfd, &nic]() {
+        std::cout << "Interrupt handler started." << std::endl;
+        uint64_t counter = 0;
+        while (true) {
+            uint64_t val;
+            size_t len = read(interrupt_eventfd, &val, 8);
+            if (len != 8) {
+                std::cout << "Interrupt handler fd read failed" << std::endl;
+                return;
+            }
+            uint32_t icr, eicr;
+            // MSI is level trigger. Reading the ICR and EICR clears
+            // the bits, which seems to reset the level.
+            nic.ReadInterruptCause(&icr, &eicr);
+            printf("INTERRUPT(%ld) ICR=%#x EICR=%#x\n", counter++, icr, eicr);
+            nic.UnmaskInterrupt();
+        }
+    });
+    // nic.TestInterrupt();
+    // printf("Testing interrupt.\n");
+    nic.EnableLscInterrupt();
+    printf("Enabled LCS interrupt\n");
+
     nic.SetPcieBusMaster();
     VALUE_OR_RAISE(nic.IntstallDmaMapping());
 
     nic.SetLinkup();
+    nic.PrintRegisters();
     printf("Link is up.\n");
 
     nic.SetupTxRing();
@@ -300,9 +398,14 @@ Result<ResultVoid, std::string> run() {
         std::getline(std::cin, payload);
         if (payload == "exit")
             break;
-        nic.SendPacket(payload);
+        else if (payload == "status") {
+            nic.PrintRegisters();
+        } else {
+            nic.SendPacket(payload);
+        }
     }
-
+    close(interrupt_eventfd);
+    interrupt_handler.join();
     return {};
 }
 

@@ -1,6 +1,7 @@
 #include "vfio.h"
 
 #include <fcntl.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
@@ -71,6 +72,30 @@ bool VfioDevice::PrintPciConfigSpace() {
            pci_conf.power_mgmt_cs);
     return true;
 }
+
+bool VfioDevice::PrintIrqsInfo() {
+    vfio_device_info device_info{};
+    device_info.argsz = sizeof(device_info);
+
+    if (ioctl(device_.get(), VFIO_DEVICE_GET_INFO, &device_info) < 0) {
+        perror("failed to get vfio device info");
+        return false;
+    }
+
+    for (size_t i = 0; i < device_info.num_irqs; i++) {
+        struct vfio_irq_info irq = {};
+        irq.argsz = sizeof(irq);
+        irq.index = i;
+
+        if (ioctl(device_.get(), VFIO_DEVICE_GET_IRQ_INFO, &irq)) {
+            perror("Failed to get irq info");
+            return false;
+        }
+        printf("IRQ index %ld: flags=%#x, count=%d\n", i, irq.flags, irq.count);
+    }
+    return true;
+}
+
 std::optional<vfio_region_info> VfioDevice::GetDeviceRegionInfo(int region_idx) {
     vfio_region_info reg_info{};
     reg_info.argsz = sizeof(reg_info);
@@ -141,6 +166,51 @@ Result<ResultVoid, std::string> VfioDevice::RegisterDmaRegion(void *va, uint64_t
         RAISE_ERRNO("failed to setup iommu dma mapping");
     }
     return {};
+}
+
+Result<int, std::string> VfioDevice::RegisterInterrupt(uint32_t index) {
+    int fd = eventfd(0, 0);
+    if (fd < 0)
+        RAISE_ERRNO("Failed to create eventfd");
+    constexpr size_t kReqSize = sizeof(vfio_irq_set) + sizeof(int32_t);
+    vfio_irq_set *req = (vfio_irq_set *)malloc(kReqSize);
+    req->argsz = kReqSize;
+    req->flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER;
+    req->index = index;
+    req->start = 0;
+    req->count = 1;
+    ((int32_t *)(req->data))[0] = fd;
+    if (ioctl(device_.get(), VFIO_DEVICE_SET_IRQS, req)) {
+        close(fd);
+        free(req);
+        return Err("Failed to set IRQ");
+    }
+    free(req);
+    return fd;
+}
+
+void VfioDevice::UnmaskInterrupt(uint32_t index) {
+    vfio_irq_set req = {};
+    req.argsz = sizeof(req);
+    req.flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_UNMASK;
+    req.index = index;
+    req.start = 0;
+    req.count = 1;
+    if (ioctl(device_.get(), VFIO_DEVICE_SET_IRQS, &req)) {
+        std::cout << "Failed to unmask IRQ" << std::endl;
+    }
+}
+
+void VfioDevice::TestInterrupt(uint32_t index) {
+    vfio_irq_set req = {};
+    req.argsz = sizeof(req);
+    req.flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER;
+    req.index = index;
+    req.start = 0;
+    req.count = 1;
+    if (ioctl(device_.get(), VFIO_DEVICE_SET_IRQS, &req)) {
+        std::cout << "Failed to test IRQ";
+    }
 }
 
 uint32_t VfioDevice::Read32(int bar, uint64_t offset) {
@@ -227,6 +297,8 @@ Result<ResultVoid, string> VfioContainer::AddIommuGroup(string group_name) {
         CLOSE_THEN_RAISE_ERRNO(group, "failed to set group's container");
     }
 
+    int duplicated_groupd = dup(group);
+    std::cout << "Duplicated_group: " << duplicated_groupd << std::endl;
     group_fd_ = UniqueFd(group);
     return {};
 }
