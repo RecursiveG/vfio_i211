@@ -153,21 +153,6 @@ char *VfioDevice::MappedRegionRaw(int bar) {
     return r.Value();
 }
 
-Result<ResultVoid, std::string> VfioDevice::RegisterDmaRegion(void *va, uint64_t iova,
-                                                              uint64_t size) {
-    vfio_iommu_type1_dma_map dma_map{};
-    dma_map.argsz = sizeof(dma_map);
-    dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
-    dma_map.vaddr = reinterpret_cast<uint64_t>(va);
-    dma_map.iova = iova;
-    dma_map.size = size;
-
-    if (ioctl(container_, VFIO_IOMMU_MAP_DMA, &dma_map) < 0) {
-        RAISE_ERRNO("failed to setup iommu dma mapping");
-    }
-    return {};
-}
-
 Result<int, std::string> VfioDevice::RegisterInterrupt(uint32_t index) {
     int fd = eventfd(0, 0);
     if (fd < 0)
@@ -319,5 +304,38 @@ Result<VfioDevice, string> VfioContainer::GetDeviceInGroup(string bdf) {
     return VfioDevice(container_fd_.get(), group_fd_.get(), UniqueFd{device});
 }
 
+Result<ResultVoid, std::string> VfioContainer::RegisterDmaRegion(void *va, uint64_t iova,
+                                                              uint64_t size) {
+    vfio_iommu_type1_dma_map dma_map{};
+    dma_map.argsz = sizeof(dma_map);
+    dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
+    dma_map.vaddr = reinterpret_cast<uint64_t>(va);
+    dma_map.iova = iova;
+    dma_map.size = size;
+
+    if (ioctl(container_fd_.get(), VFIO_IOMMU_MAP_DMA, &dma_map) < 0) {
+        RAISE_ERRNO("failed to setup iommu dma mapping");
+    }
+    return {};
+}
+
 VfioContainer::VfioContainer(UniqueFd container_fd)
     : container_fd_(std::move(container_fd)) {}
+
+Result<std::unique_ptr<VfioMemory>, std::string>
+VfioMemory::Allocate(int pages, VfioContainer *container) {
+    void *addr =
+        mmap(0, 4096 * pages, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+    if (addr == MAP_FAILED) {
+        RAISE_ERRNO("mmap failed to allocate memory");
+    }
+    VALUE_OR_RAISE(container->RegisterDmaRegion(addr, reinterpret_cast<uint64_t>(addr),
+                                                4096 * pages));
+    printf("Mapped DMA region: VA=IOVA=%p, size=%#x\n", addr, 4096 * pages);
+
+    auto mem = std::make_unique<VfioMemory>();
+    mem->data_ = addr;
+    mem->size_ = 4096 * pages;
+    mem->iova_ = reinterpret_cast<uintptr_t>(addr);
+    return mem;
+}

@@ -60,8 +60,6 @@ class VfioDevice {
 
     int device() { return device_.get(); }
 
-    Result<ResultVoid, std::string> RegisterDmaRegion(void *va, uint64_t iova,
-                                                      uint64_t size);
     Result<int, std::string> RegisterInterrupt(uint32_t index);
     void UnmaskInterrupt(uint32_t index);
     void TestInterrupt(uint32_t index);
@@ -114,9 +112,32 @@ class VfioContainer {
     Result<ResultVoid, std::string> AddIommuGroup(std::string group_name);
     Result<ResultVoid, std::string> SetIommuType1();
     Result<VfioDevice, std::string> GetDeviceInGroup(std::string bdf);
+    Result<ResultVoid, std::string> RegisterDmaRegion(void *va, uint64_t iova,
+                                                      uint64_t size);
 
   private:
     explicit VfioContainer(UniqueFd container_fd);
     UniqueFd container_fd_;
     UniqueFd group_fd_;
+};
+
+class VfioMemory {
+  public:
+    static Result<std::unique_ptr<VfioMemory>, std::string>
+    Allocate(int pages, VfioContainer *container);
+
+    VfioMemory() = default;
+    VfioMemory(const VfioMemory &) = delete;
+    VfioMemory(VfioMemory &&) = delete;
+    VfioMemory &operator=(const VfioMemory &) = delete;
+    VfioMemory &operator=(VfioMemory &&) = delete;
+
+    template <typename T = void> T *data() { return static_cast<T *>(data_); }
+    size_t size() { return size_; }
+    uintptr_t iova() { return iova_; }
+
+  private:
+    void *data_;
+    size_t size_;
+    uintptr_t iova_;
 };

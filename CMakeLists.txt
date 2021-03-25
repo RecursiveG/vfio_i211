@@ -40,5 +40,9 @@ FetchContent_MakeAvailable(abseil-cpp)
 FetchContent_MakeAvailable(backward-cpp)
 FetchContent_MakeAvailable(magic_enum)
 
-add_executable(send_udp send_udp.cpp hw_defs.h vfio.cpp vfio.h)
-target_link_libraries(send_udp PRIVATE absl::flags absl::flags_parse magic_enum result)
+add_library(i211 i211.cpp vfio.cpp)
+target_link_libraries(i211 PUBLIC 
+    absl::flags absl::flags_parse magic_enum result)
+
+add_executable(send_udp send_udp.cpp ${BACKWARD_ENABLE})
+target_link_libraries(send_udp PRIVATE i211 -lbfd -ldl -ldw -ldwarf)
