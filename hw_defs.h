@@ -124,6 +124,25 @@ struct AdvTxDataDescriptor {
 };
 static_assert(sizeof(AdvTxDataDescriptor) == 16);
 
+struct LegacyRxDescriptor {
+    uint64_t buffer_addr;
+    uint16_t length;
+    uint16_t fragment_checksum;
+
+    bool descriptor_done : 1;
+    bool eop : 1;
+    bool rsv : 1;
+    bool vp : 1;
+    bool udpcs : 1;
+    bool l4cs : 1;
+    bool ipcs : 1;
+    bool pif : 1;
+
+    uint8_t error_field;
+    uint16_t vlan_tag;
+};
+static_assert(sizeof(LegacyRxDescriptor) == 16);
+
 #undef DUMP
 #undef DUMP_BOOL
 #undef DUMP_ENUM

@@ -107,6 +107,47 @@ IntelI211Device::SetupTxRing(std::unique_ptr<VfioMemory> desc_buf_ring,
     return {};
 }
 
+Result<ResultVoid, std::string>
+IntelI211Device::SetupRxRing(std::unique_ptr<VfioMemory> desc_buf_ring,
+                             size_t ring_entries, uint64_t packet_buf_iova,
+                             uint64_t packet_buf_bytes) {
+    constexpr uint64_t kPerPacketBufSize = 2048;
+    uint64_t desc_ring_bytes = ring_entries * sizeof(LegacyRxDescriptor);
+    if (desc_ring_bytes % 128 != 0)
+        return Err("invalid ring_entries");
+    if (desc_ring_bytes > desc_buf_ring->size())
+        return Err("rx_desc_ring too small");
+    if (packet_buf_bytes < ring_entries * kPerPacketBufSize)
+        return Err("packet_buf_bytes too small");
+    rx_desc_ring_ = std::move(desc_buf_ring);
+
+    memset(rx_desc_ring_->data(), 0, desc_ring_bytes);
+    for (size_t rx_desc_idx = 0; rx_desc_idx < ring_entries; rx_desc_idx++) {
+        LegacyRxDescriptor &desc = rx_desc_ring_->data<LegacyRxDescriptor>()[rx_desc_idx];
+        desc.buffer_addr = packet_buf_iova + kPerPacketBufSize * rx_desc_idx;
+    }
+
+    // RX descriptor ring address
+    dev_->Write64(0, RDBA64, rx_desc_ring_->iova());
+    // RX ring size
+    dev_->Write32(0, RDLEN, desc_ring_bytes);
+    // TAIL/HEAD position
+    dev_->Write32(0, RDH, 0);
+    dev_->Write32(0, RDT, 0);
+    rx_desc_head_ = 0;
+    // enable queue and poll until 1
+    dev_->WriteBit32(0, RXDCTL, RXDCTL_ENABLE, 1);
+    dev_->WaitBit32(0, RXDCTL, RXDCTL_ENABLE, 1);
+    // RCTL.RXEN
+    dev_->WriteBit32(0, RCTL, RCTL_UPE, 1);
+    dev_->WriteBit32(0, RCTL, RCTL_MPE, 1);
+    dev_->WriteBit32(0, RCTL, RCTL_RXEN, 1);
+
+    // Advance Queue tail
+    dev_->Write32(0, RDT, ring_entries - 1);
+    return {};
+}
+
 void IntelI211Device::SendPacket(NetworkPacket *pkt) {
     // set descriptor
     uint32_t tail_index = dev_->Read32(0, TDT);
@@ -126,5 +167,15 @@ void IntelI211Device::SendPacket(NetworkPacket *pkt) {
     dev_->Write32(0, TDT, new_tail);
     printf("sending packet, tail advanced %d->%d\n", tail_index, new_tail);
     while (!desc.descriptor_done) {
-    } // spin pool
+        // spin poll
+    }
+}
+
+void IntelI211Device::RecvPacket(int *index, uint16_t *length) {
+    volatile auto &desc = rx_desc_ring_->data<LegacyRxDescriptor>()[rx_desc_head_];
+    while (!desc.descriptor_done) {
+        // spin poll
+    }
+    *length = desc.length;
+    *index = rx_desc_head_++;
 }

@@ -1,5 +1,5 @@
-#include "vfio.h"
 #include "packet_builder.h"
+#include "vfio.h"
 
 class IntelI211Device {
   public:
@@ -45,6 +45,28 @@ class IntelI211Device {
     // 8.7.17 General Purpose Interrupt Enable
     static const uint64_t GPIE = 0x1514;
 
+    // 8.9.1 Recv Control Register
+    static const uint64_t RCTL = 0x0100;
+    static const uint32_t RCTL_RXEN = 1;
+    static const uint32_t RCTL_UPE = 3; // Unicast Promiscuous Enabled
+    static const uint32_t RCTL_MPE = 4; // Multicast Promiscuous Enabled
+
+    // 8.9.4-5 Recv Descriptor Base Addr LOW/HIGH[0]
+    static const uint64_t RDBA64 = 0xC000;
+
+    // 8.9.6 Recv Descriptor Ring Length[0]
+    static const uint64_t RDLEN = 0xC008;
+
+    // 8.9.7 Recv Descriptor Head[0]
+    static const uint64_t RDH = 0xC010;
+
+    // 8.9.8 Recv Descriptor Tail[0]
+    static const uint64_t RDT = 0xC018;
+
+    // 8.9.9 Recv Descript Control[0]
+    static const uint64_t RXDCTL = 0xC028;
+    static const uint32_t RXDCTL_ENABLE = 25;
+
     // 8.11.1 Transmit Control Register
     static const uint64_t TCTL = 0x0400;
     static const uint64_t TCTL_EN = 1; // Transmit enable
@@ -78,14 +100,21 @@ class IntelI211Device {
     void TestInterrupt();
     void ReadInterruptCause(uint32_t *icr, uint32_t *eicr);
 
-    Result<ResultVoid, std::string>
-    SetupTxRing(std::unique_ptr<VfioMemory> desc_buf_ring, size_t ring_entries);
-    void SendPacket(NetworkPacket* pkt);
+    Result<ResultVoid, std::string> SetupTxRing(std::unique_ptr<VfioMemory> desc_buf_ring,
+                                                size_t ring_entries);
+    Result<ResultVoid, std::string> SetupRxRing(std::unique_ptr<VfioMemory> desc_buf_ring,
+                                                size_t ring_entries,
+                                                uint64_t packet_buf_iova,
+                                                uint64_t packet_buf_bytes);
+    void SendPacket(NetworkPacket *pkt);
+    void RecvPacket(int *index, uint16_t *length);
 
   private:
     VfioDevice *const dev_;
 
     std::unique_ptr<VfioMemory> tx_desc_ring_;
-    size_t tx_desc_entries_;  // # of AdvTxDataDescriptor
+    size_t tx_desc_entries_; // # of AdvTxDataDescriptor
     // size_t tx_desc_tail_; // next available
+    std::unique_ptr<VfioMemory> rx_desc_ring_;
+    size_t rx_desc_head_; // next to complete
 };

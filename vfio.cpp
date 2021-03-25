@@ -305,7 +305,7 @@ Result<VfioDevice, string> VfioContainer::GetDeviceInGroup(string bdf) {
 }
 
 Result<ResultVoid, std::string> VfioContainer::RegisterDmaRegion(void *va, uint64_t iova,
-                                                              uint64_t size) {
+                                                                 uint64_t size) {
     vfio_iommu_type1_dma_map dma_map{};
     dma_map.argsz = sizeof(dma_map);
     dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;

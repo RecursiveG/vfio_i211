@@ -8,10 +8,11 @@
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "hexdump.hpp"
 #include "hw_defs.h"
+#include "i211.h"
 #include "result.h"
 #include "vfio.h"
-#include "i211.h"
 
 using namespace std;
 using std::string;
@@ -75,15 +76,20 @@ Result<ResultVoid, std::string> run() {
     printf("Enabled LCS interrupt\n");
 
     nic.SetPcieBusMaster();
-    ASSIGN_OR_RAISE(auto ring_buf, VfioMemory::Allocate(1, &container));
-    ASSIGN_OR_RAISE(auto pkt_buf, VfioMemory::Allocate(1, &container));
-    NetworkPacket pkt(pkt_buf->data(), pkt_buf->iova(), pkt_buf->size());
+    ASSIGN_OR_RAISE(auto tx_ring_buf, VfioMemory::Allocate(1, &container));
+    ASSIGN_OR_RAISE(auto rx_ring_buf, VfioMemory::Allocate(1, &container));
+    ASSIGN_OR_RAISE(auto tx_pkt_buf, VfioMemory::Allocate(1, &container));
+    ASSIGN_OR_RAISE(auto rx_pkt_buf, VfioMemory::Allocate(8, &container));
+    NetworkPacket pkt(tx_pkt_buf->data(), tx_pkt_buf->iova(), tx_pkt_buf->size());
 
     nic.SetLinkup();
     nic.PrintRegisters();
     printf("Link is up.\n");
 
-    nic.SetupTxRing(std::move(ring_buf), 32);
+    VALUE_OR_RAISE(nic.SetupTxRing(std::move(tx_ring_buf), 8)); // 8 is minimal size
+    VALUE_OR_RAISE(nic.SetupRxRing(std::move(rx_ring_buf), 8, rx_pkt_buf->iova(),
+                                   rx_pkt_buf->size()));
+    std::cout << "TX/RX queues ready" << std::endl;
 
     while (true) {
         std::cout << "payload> " << std::flush;
@@ -93,6 +99,12 @@ Result<ResultVoid, std::string> run() {
             break;
         else if (payload == "status") {
             nic.PrintRegisters();
+        } else if (payload == "recv") {
+            int idx;
+            uint16_t size;
+            nic.RecvPacket(&idx, &size);
+            printf("Received packet of %d bytes at %d\n", size, idx);
+            hexdump(rx_pkt_buf->data<uint8_t>() + 2048 * idx, size, std::cout);
         } else {
             pkt.SetContent(payload);
             nic.SendPacket(&pkt);
