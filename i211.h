@@ -33,6 +33,7 @@ class IntelI211Device {
 
     // 8.7.5 Extended Interrupt Mask Set Read Register
     static const uint64_t EIMS = 0x1524;
+    static const uint64_t EIMS_RXTXQ0 = 0;
     static const uint64_t EIMS_OTHER = 31; // Need to check IMS
 
     // 8.7.9 Interrupt Cause Read
@@ -41,6 +42,11 @@ class IntelI211Device {
     // 8.7.11 Interrupt Mask Set Read Register
     static const uint64_t IMS = 0x1508;
     static const uint64_t IMS_LSC = 2; // Link status change
+    static const uint64_t IMS_RXDW = 7; // Receiver descriptor write back
+
+    // 8.7.15 Interrupt Vector Allocation Register
+    static const uint64_t IVAR0 = 0x1700;
+    static const uint64_t IVAR0_RX0_VALID = 7;
 
     // 8.7.17 General Purpose Interrupt Enable
     static const uint64_t GPIE = 0x1514;
@@ -91,6 +97,7 @@ class IntelI211Device {
     void SetPcieBusMaster();
     void MaskAllInterrupts();
     void EnableLscInterrupt();
+    void EnableRx0Interrupt();
     void ResetDevice();
     void SetLinkup();
     uint16_t ReadMdiRegister(int regaddr);

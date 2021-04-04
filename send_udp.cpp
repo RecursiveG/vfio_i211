@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <pcap/pcap.h>
+#include <sys/epoll.h>
 #include <unistd.h>
 
 #include "absl/flags/flag.h"
@@ -22,6 +23,32 @@ using std::string;
 ABSL_FLAG(string, bdf, "", "BUS:DEVICE:FUNCTION of the NIC.");
 ABSL_FLAG(string, group, "", "IOMMU group number.");
 ABSL_FLAG(string, pcap, "", "FIFO file to dump packets into.");
+
+Result<ResultVoid, std::string> handle_interrupt(int interrupt_eventfd,
+                                                 IntelI211Device &nic,
+                                                 VfioMemory *rx_pkt_buf,
+                                                 PcapDumperInterface *pcap) {
+    static long counter = 0;
+    uint64_t val;
+    size_t len = read(interrupt_eventfd, &val, 8);
+    if (len != 8) {
+        return Err("Interrupt handler fd read failed");
+    }
+    uint32_t icr, eicr;
+    // MSI is level trigger. Reading the ICR and EICR clears
+    // the bits, which seems to reset the level.
+    nic.ReadInterruptCause(&icr, &eicr);
+    printf("INTERRUPT(%ld) ICR=%#x EICR=%#x\n", counter++, icr, eicr);
+    if ((icr & 0x80) && (eicr & 1)) {
+        int idx;
+        uint16_t size;
+        nic.RecvPacket(&idx, &size);
+        printf("Received packet of %d bytes at %d\n", size, idx);
+        pcap->Dump(std::string(rx_pkt_buf->data<char>() + 2048 * idx, size));
+    }
+    nic.UnmaskInterrupt();
+    return {};
+}
 
 Result<ResultVoid, std::string> run() {
     // absl::ParseCommandLine(argc, argv);
@@ -54,34 +81,13 @@ Result<ResultVoid, std::string> run() {
     nic.MaskAllInterrupts();
     printf("Device reset done.\n");
 
-    std::atomic<bool> program_exit = false;
     int interrupt_eventfd = VALUE_OR_RAISE(nic.RegisterInterrupt());
-    std::thread interrupt_handler([interrupt_eventfd, &nic, &program_exit]() {
-        std::cout << "Interrupt handler started." << std::endl;
-        uint64_t counter = 0;
-        while (true) {
-            uint64_t val;
-            size_t len = read(interrupt_eventfd, &val, 8);
-            if (program_exit) {
-                std::cout << "Interrupt handler exits." << std::endl;
-                return;
-            }
-            if (len != 8) {
-                std::cout << "Interrupt handler fd read failed" << std::endl;
-                return;
-            }
-            uint32_t icr, eicr;
-            // MSI is level trigger. Reading the ICR and EICR clears
-            // the bits, which seems to reset the level.
-            nic.ReadInterruptCause(&icr, &eicr);
-            printf("INTERRUPT(%ld) ICR=%#x EICR=%#x\n", counter++, icr, eicr);
-            nic.UnmaskInterrupt();
-        }
-    });
     // nic.TestInterrupt();
     // printf("Testing interrupt.\n");
     nic.EnableLscInterrupt();
     printf("Enabled LCS interrupt\n");
+    nic.EnableRx0Interrupt();
+    printf("Enabled RxQ0 interrupt\n");
 
     nic.SetPcieBusMaster();
     ASSIGN_OR_RAISE(auto tx_ring_buf, VfioMemory::Allocate(1, &container));
@@ -99,31 +105,54 @@ Result<ResultVoid, std::string> run() {
                                    rx_pkt_buf->size()));
     std::cout << "TX/RX queues ready" << std::endl;
 
+    // Event loop start
+    int epollfd = epoll_create(1024);
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = interrupt_eventfd;
+    epoll_ctl(epollfd, EPOLL_CTL_ADD, interrupt_eventfd, &ev);
+    ev.data.fd = STDIN_FILENO;
+    epoll_ctl(epollfd, EPOLL_CTL_ADD, STDIN_FILENO, &ev);
+
+    struct epoll_event events_in[16];
+    std::cout << "payload> " << std::flush;
     while (true) {
-        std::cout << "payload> " << std::flush;
-        std::string payload;
-        std::getline(std::cin, payload);
-        if (payload == "exit")
-            break;
-        else if (payload == "status") {
-            nic.PrintRegisters();
-        } else if (payload == "recv") {
-            int idx;
-            uint16_t size;
-            nic.RecvPacket(&idx, &size);
-            printf("Received packet of %d bytes at %d\n", size, idx);
-            hexdump(rx_pkt_buf->data<uint8_t>() + 2048 * idx, size, std::cout);
-            pcap->Dump(std::string(rx_pkt_buf->data<char>() + 2048 * idx, size));
-        } else {
-            pkt.SetContent(payload);
-            pcap->Dump(pkt.dump());
-            nic.SendPacket(&pkt);
+        int event_count = epoll_wait(epollfd, events_in, 16, -1);
+        for (int i = 0; i < event_count; i++) {
+            if (events_in[i].data.fd == STDIN_FILENO) {
+                // Handles user input.
+                std::string payload;
+                std::getline(std::cin, payload);
+                if (payload == "exit")
+                    goto exit_event_loop;
+                else if (payload == "status") {
+                    nic.PrintRegisters();
+                } else if (payload == "recv") {
+                    int idx;
+                    uint16_t size;
+                    nic.RecvPacket(&idx, &size);
+                    printf("Received packet of %d bytes at %d\n", size, idx);
+                    hexdump(rx_pkt_buf->data<uint8_t>() + 2048 * idx, size, std::cout);
+                    pcap->Dump(std::string(rx_pkt_buf->data<char>() + 2048 * idx, size));
+                } else {
+                    pkt.SetContent(payload);
+                    pcap->Dump(pkt.dump());
+                    nic.SendPacket(&pkt);
+                }
+                std::cout << "payload> " << std::flush;
+            } else if (events_in[i].data.fd == interrupt_eventfd) {
+                auto r = handle_interrupt(interrupt_eventfd, nic, rx_pkt_buf.get(),
+                                          pcap.get());
+                if (!r) {
+                    std::cout << r.Error() << std::endl;
+                }
+            } else {
+                std::cout << "unexpected fd";
+            }
         }
     }
-    program_exit = true;
-    uint64_t one = 1;
-    write(interrupt_eventfd, &one, 8);
-    interrupt_handler.join();
+exit_event_loop:
+
     close(interrupt_eventfd);
     return {};
 }

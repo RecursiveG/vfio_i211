@@ -25,6 +25,16 @@ void IntelI211Device::EnableLscInterrupt() {
     dev_->WriteBit32(0, EIMS, EIMS_OTHER, 1);
 }
 
+void IntelI211Device::EnableRx0Interrupt() {
+    dev_->WriteBit32(0, ICR, IMS_RXDW, 1);
+    dev_->WriteBit32(0, EICR, EIMS_RXTXQ0, 1);
+
+    dev_->WriteBit32(0, IMS, IMS_RXDW, 1);
+    dev_->WriteBit32(0, EIMS, EIMS_RXTXQ0, 1);
+
+    dev_->WriteBit32(0, IVAR0, IVAR0_RX0_VALID, 1);
+}
+
 void IntelI211Device::ResetDevice() {
     dev_->WriteBit32(0, CTRL, CTRL_RST, 1);
     usleep(1000);
