@@ -40,9 +40,14 @@ FetchContent_MakeAvailable(abseil-cpp)
 FetchContent_MakeAvailable(backward-cpp)
 FetchContent_MakeAvailable(magic_enum)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(libpcap REQUIRED IMPORTED_TARGET libpcap)
+
 add_library(i211 i211.cpp vfio.cpp)
 target_link_libraries(i211 PUBLIC 
     absl::flags absl::flags_parse magic_enum result)
+add_library(pcap_dumper pcap_dumper.cpp)
+target_link_libraries(pcap_dumper PUBLIC PkgConfig::libpcap)
 
 add_executable(send_udp send_udp.cpp ${BACKWARD_ENABLE})
-target_link_libraries(send_udp PRIVATE i211 -lbfd -ldl -ldw -ldwarf)
+target_link_libraries(send_udp PRIVATE i211 pcap_dumper -lbfd -ldl -ldw -ldwarf)

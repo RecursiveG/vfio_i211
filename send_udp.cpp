@@ -4,6 +4,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <pcap/pcap.h>
 #include <unistd.h>
 
 #include "absl/flags/flag.h"
@@ -11,6 +12,7 @@
 #include "hexdump.hpp"
 #include "hw_defs.h"
 #include "i211.h"
+#include "pcap_dumper.h"
 #include "result.h"
 #include "vfio.h"
 
@@ -18,7 +20,8 @@ using namespace std;
 using std::string;
 
 ABSL_FLAG(string, bdf, "", "BUS:DEVICE:FUNCTION of the NIC.");
-ABSL_FLAG(string, group, "", "IOMMU group number");
+ABSL_FLAG(string, group, "", "IOMMU group number.");
+ABSL_FLAG(string, pcap, "", "FIFO file to dump packets into.");
 
 Result<ResultVoid, std::string> run() {
     // absl::ParseCommandLine(argc, argv);
@@ -38,7 +41,12 @@ Result<ResultVoid, std::string> run() {
         device.PrintBarInfo(bar);
 
     // return {};
-
+    std::unique_ptr<PcapDumperInterface> pcap;
+    if (absl::GetFlag(FLAGS_pcap) == "") {
+        pcap = std::make_unique<PcapDummyDumper>();
+    } else {
+        pcap = std::make_unique<PcapDumper>(absl::GetFlag(FLAGS_pcap));
+    }
     IntelI211Device nic(&device);
 
     nic.MaskAllInterrupts();
@@ -105,8 +113,10 @@ Result<ResultVoid, std::string> run() {
             nic.RecvPacket(&idx, &size);
             printf("Received packet of %d bytes at %d\n", size, idx);
             hexdump(rx_pkt_buf->data<uint8_t>() + 2048 * idx, size, std::cout);
+            pcap->Dump(std::string(rx_pkt_buf->data<char>() + 2048 * idx, size));
         } else {
             pkt.SetContent(payload);
+            pcap->Dump(pkt.dump());
             nic.SendPacket(&pkt);
         }
     }

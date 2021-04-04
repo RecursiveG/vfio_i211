@@ -79,6 +79,7 @@ class NetworkPacket {
 
     uint64_t iova() { return iova_; }
     uint64_t packet_size() { return packet_size_; }
+    std::string dump() { return std::string{static_cast<char *>(va_), packet_size_}; }
 
   private:
     void *va_;
