@@ -1,3 +1,4 @@
+#include <chrono>
 #include <pcap/pcap.h>
 #include <string>
 
@@ -20,4 +21,5 @@ class PcapDumper : public PcapDumperInterface {
   private:
     pcap_t *pcap_;
     pcap_dumper_t *dumper_;
+    std::chrono::time_point<std::chrono::high_resolution_clock> start_;
 };
