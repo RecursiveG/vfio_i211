@@ -41,7 +41,7 @@ class IntelI211Device {
 
     // 8.7.11 Interrupt Mask Set Read Register
     static const uint64_t IMS = 0x1508;
-    static const uint64_t IMS_LSC = 2; // Link status change
+    static const uint64_t IMS_LSC = 2;  // Link status change
     static const uint64_t IMS_RXDW = 7; // Receiver descriptor write back
 
     // 8.7.15 Interrupt Vector Allocation Register

@@ -36,38 +36,54 @@ NextHdrType *NextHdr(ThisHdrType *hdr, size_t &rem_size) {
 
 struct PostInterruptTask {
     bool send_neigh_advert;
+    bool send_echo_reply;
+    std::string echo_payload;
+    uint16_t echo_id;
+    uint16_t echo_seq;
     char peer_mac[6];
     in6_addr peer_addr;
 };
 
-// clang-format off
-std::optional<PostInterruptTask>
-reply_ipv6_neighbor_solicitation(char *data, size_t size) {
+std::optional<PostInterruptTask> reply_icmpv6(char *data, size_t size) {
+    PostInterruptTask ret = {};
+
     printf("Try parsing ICMPv6\n");
-    if (size < sizeof(ethhdr)) return {};
-    
+    if (size < sizeof(ethhdr))
+        return {};
+
     printf("Received: Ether\n");
     ethhdr *ether = reinterpret_cast<ethhdr *>(data);
-    if (ether->h_proto != htobe16(ETH_P_IPV6)) return {};
-    
+    memcpy(ret.peer_mac, ether->h_source, 6);
+    if (ether->h_proto != htobe16(ETH_P_IPV6))
+        return {};
+
     printf("Received: IPv6\n");
     auto *ip6 = NextHdr<ip6_hdr>(ether, size);
-    if (ip6->ip6_nxt != IPPROTO_ICMPV6) return {};
-    
+    memcpy(&ret.peer_addr, &ip6->ip6_src, sizeof(in6_addr));
+    if (ip6->ip6_nxt != IPPROTO_ICMPV6)
+        return {};
+
     printf("Received: ICMP6\n");
     auto *icmp6 = NextHdr<icmp6_hdr>(ip6, size);
-    if (icmp6->icmp6_type != ND_NEIGHBOR_SOLICIT) return {};
-    
-    printf("Received: ND_NEIGHBOR_SOLICIT\n");
-    if (size < sizeof(nd_neighbor_solicit)) return {};
 
-    PostInterruptTask ret = {};
-    ret.send_neigh_advert = true;
-    memcpy(ret.peer_mac, ether->h_source, 6);
-    memcpy(&ret.peer_addr, &ip6->ip6_src, sizeof(in6_addr));
-    return ret;
+    if (icmp6->icmp6_type == ND_NEIGHBOR_SOLICIT) {
+        printf("Received: ND_NEIGHBOR_SOLICIT\n");
+        if (size < sizeof(nd_neighbor_solicit))
+            return {};
+        ret.send_neigh_advert = true;
+        return ret;
+    } else if (icmp6->icmp6_type == ICMP6_ECHO_REQUEST) {
+        size_t echo_payload_len = be16toh(ip6->ip6_plen) - sizeof(icmp6_hdr);
+        ret.echo_id = icmp6->icmp6_id;
+        ret.echo_seq = icmp6->icmp6_seq;
+        ret.echo_payload = std::string(
+            reinterpret_cast<char *>(icmp6) + sizeof(icmp6_hdr), echo_payload_len);
+        ret.send_echo_reply = true;
+        return ret;
+    } else {
+        return {};
+    }
 }
-// clang-format on
 
 Result<PostInterruptTask, std::string> handle_interrupt(int interrupt_eventfd,
                                                         IntelI211Device &nic,
@@ -90,11 +106,10 @@ Result<PostInterruptTask, std::string> handle_interrupt(int interrupt_eventfd,
         nic.RecvPacket(&idx, &size);
         printf("Received packet of %d bytes at %d\n", size, idx);
         pcap->Dump(std::string(rx_pkt_buf->data<char>() + 2048 * idx, size));
-        auto neigh_advert =
-            reply_ipv6_neighbor_solicitation(rx_pkt_buf->data<char>() + 2048 * idx, size);
-        if (neigh_advert) {
+        auto task = reply_icmpv6(rx_pkt_buf->data<char>() + 2048 * idx, size);
+        if (task) {
             nic.UnmaskInterrupt();
-            return neigh_advert.value();
+            return task.value();
         }
     }
     nic.UnmaskInterrupt();
@@ -198,6 +213,12 @@ Result<ResultVoid, std::string> run() {
                     std::cout << r.Error() << std::endl;
                 } else if (r.Value().send_neigh_advert) {
                     pkt.BuildNeighAdvert(r.Value().peer_mac, r.Value().peer_addr);
+                    pcap->Dump(pkt.dump());
+                    nic.SendPacket(&pkt);
+                } else if (r.Value().send_echo_reply) {
+                    pkt.BuildEchoReply(r.Value().peer_mac, r.Value().peer_addr,
+                                       r.Value().echo_id, r.Value().echo_seq,
+                                       r.Value().echo_payload);
                     pcap->Dump(pkt.dump());
                     nic.SendPacket(&pkt);
                 }

@@ -22,13 +22,19 @@ struct udp_packet_header {
 } __attribute__((packed));
 static_assert(sizeof(udp_packet_header) == 62);
 
-struct icmp6_packet {
+struct icmp6_neigh_adv_packet {
     ethhdr eth;
     ip6_hdr ip6;
     nd_neighbor_advert icmp6;
     uint8_t opt_type;
     uint8_t opt_size;
     char target_ether[6];
+} __attribute__((packed));
+
+struct icmp6_echo_reply_hdr {
+    ethhdr eth;
+    ip6_hdr ip6;
+    icmp6_hdr icmp6;
 } __attribute__((packed));
 
 inline void set_ethaddr_array(uint64_t ethaddr, uint8_t *arr) {
@@ -46,8 +52,8 @@ class NetworkPacket {
 
     Result<ResultVoid, std::string> BuildNeighAdvert(const char peermac[6],
                                                      const in6_addr &peerip) {
-        icmp6_packet *pkt = static_cast<icmp6_packet *>(va_);
-        memset(pkt, 0, sizeof(icmp6_packet));
+        icmp6_neigh_adv_packet *pkt = static_cast<icmp6_neigh_adv_packet *>(va_);
+        memset(pkt, 0, sizeof(icmp6_neigh_adv_packet));
         set_ethaddr_array(kSrcEther, pkt->eth.h_source);
         memcpy(pkt->eth.h_dest, peermac, 6);
         pkt->eth.h_proto = htobe16(ETH_P_IPV6);
@@ -78,7 +84,51 @@ class NetworkPacket {
                        (sizeof(nd_neighbor_advert) + 8) / 2);
         pkt->icmp6.nd_na_hdr.icmp6_cksum = htobe16(checker.get());
 
-        packet_size_ = sizeof(icmp6_packet);
+        packet_size_ = sizeof(icmp6_neigh_adv_packet);
+        return {};
+    }
+
+    Result<ResultVoid, std::string> BuildEchoReply(const char peermac[6],
+                                                   const in6_addr &peerip, uint16_t id,
+                                                   uint16_t seq,
+                                                   const std::string &data) {
+        if (sizeof(icmp6_echo_reply_hdr) + data.size() > length_) {
+            return Err("payload too large");
+        }
+
+        icmp6_echo_reply_hdr *pkt = static_cast<icmp6_echo_reply_hdr *>(va_);
+        memset(pkt, 0, sizeof(icmp6_neigh_adv_packet) + data.size());
+        set_ethaddr_array(kSrcEther, pkt->eth.h_source);
+        memcpy(pkt->eth.h_dest, peermac, 6);
+        pkt->eth.h_proto = htobe16(ETH_P_IPV6);
+
+        pkt->ip6.ip6_flow = 0;
+        pkt->ip6.ip6_vfc = 0x60;
+        pkt->ip6.ip6_plen = htobe16(sizeof(icmp6_hdr) + data.size());
+        pkt->ip6.ip6_nxt = IPPROTO_ICMPV6;
+        pkt->ip6.ip6_hlim = 255;
+        int success = inet_pton(AF_INET6, kSrcIp, &pkt->ip6.ip6_src);
+        if (!success)
+            return Err("cannot set ipv6 address");
+        memcpy(&pkt->ip6.ip6_dst, &peerip, sizeof(in6_addr));
+
+        pkt->icmp6.icmp6_type = ICMP6_ECHO_REPLY;
+        pkt->icmp6.icmp6_code = 0;
+        pkt->icmp6.icmp6_id = id;
+        pkt->icmp6.icmp6_seq = seq;
+        memcpy(reinterpret_cast<char *>(va_) + sizeof(icmp6_echo_reply_hdr), data.data(),
+               data.size());
+
+        UdpChecksumer checker;
+        checker.update(pkt->ip6.ip6_src);
+        checker.update(pkt->ip6.ip6_dst);
+        checker.update_be(pkt->ip6.ip6_plen);
+        checker.update_le(IPPROTO_ICMPV6);
+        checker.update(reinterpret_cast<char *>(&pkt->icmp6), sizeof(icmp6_hdr) / 2);
+        checker.update(data.data(), (data.size() + 1) / 2);
+        pkt->icmp6.icmp6_cksum = htobe16(checker.get());
+
+        packet_size_ = sizeof(icmp6_echo_reply_hdr) + data.size();
         return {};
     }
 
