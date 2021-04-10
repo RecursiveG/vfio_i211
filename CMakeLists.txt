@@ -51,3 +51,9 @@ target_link_libraries(pcap_dumper PUBLIC PkgConfig::libpcap)
 
 add_executable(send_udp send_udp.cpp ${BACKWARD_ENABLE})
 target_link_libraries(send_udp PRIVATE i211 pcap_dumper -lbfd -ldl -ldw -ldwarf)
+
+add_executable(uds_receiver uds_receiver.cpp ${BACKWARD_ENABLE})
+target_link_libraries(uds_receiver PRIVATE absl::flags absl::flags_parse -lbfd -ldl -ldw -ldwarf)
+
+add_executable(uds_sender uds_sender.cpp ${BACKWARD_ENABLE})
+target_link_libraries(uds_sender PRIVATE absl::flags absl::flags_parse -lbfd -ldl -ldw -ldwarf)
